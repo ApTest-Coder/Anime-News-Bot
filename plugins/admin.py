@@ -161,7 +161,7 @@ async def settings_callback(client: Client, callback_query):
 @Client.on_message(filters.command("add_rss") & admin)
 async def add_rss_cmd(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text("⚠️ **sʏɴᴛᴀx ᴇʀʀᴏʀ:** ᴜsᴀɢᴇ: `/add_rss <url>`")
+        return await message.reply_text("⚠️ **SYNTAX ERROR:** Usage: `/add_rss <url>`")
     current_feeds = await db.get_all_rss()
     if len(current_feeds) >= 2:
         return await message.reply_text("⛔️ **ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ:** sʏsᴛᴇᴍ ʀᴇsᴛʀɪᴄᴛᴇᴅ ᴛᴏ 2 ʀss sᴏᴜʀᴄᴇs ᴍᴀxɪᴍᴜᴍ.")
