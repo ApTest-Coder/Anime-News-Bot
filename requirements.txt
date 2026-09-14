@@ -1,8 +1,0 @@
-pyrofork
-tgcrypto
-aiohttp
-feedparser
-apscheduler
-aiosqlite
-beautifulsoup4
-motor
