@@ -10,11 +10,12 @@ Provides intelligent feed detection for the /add_rss command:
 import aiohttp
 import asyncio
 import feedparser
+import hashlib
 import json
 import logging
 import re
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlencode, parse_qsl, urlunparse
 from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,64 @@ SKIP_PATTERNS = [
 ]
 
 SKIP_EXTENSIONS = [".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".zip", ".ico", ".woff", ".ttf"]
+# Tracking query parameters to strip during URL normalization
+TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "ref", "referrer", "source", "mc_cid")
+
+
+def normalize_article_url(url: str) -> str:
+    """
+    Normalize a URL for cross-source duplicate comparison.
+    Strips tracking params, fragments; normalizes hostname case and trailing slash.
+    """
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return url
+        hostname = parsed.netloc.lower()
+        filtered = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                    if not k.lower().startswith(TRACKING_PARAMS)]
+        new_query = urlencode(filtered)
+        path = parsed.path.rstrip("/") if parsed.path else ""
+        return urlunparse((parsed.scheme, hostname, path, parsed.params, new_query, ""))
+    except Exception:
+        return url
+
+
+def normalize_title(title: str) -> str:
+    """
+    Normalize a title for duplicate comparison: lowercase, trim, collapse whitespace.
+    """
+    if not title:
+        return ""
+    title = re.sub(r"\s+", " ", title.lower().strip())
+    title = title.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+    return title
+
+
+def build_dedup_key(title: str, url: str, guid: str = None, published: str = None) -> str:
+    """
+    Build a stable global deduplication key for an item.
+    Priority:
+      1. guid / entry id
+      2. normalized article URL
+      3. hash(title + normalized URL)
+      4. hash(normalized title + published date)
+    """
+    if guid:
+        return f"guid:{guid.strip()}"
+    norm_url = normalize_article_url(url)
+    if norm_url:
+        return f"url:{norm_url}"
+    norm_title = normalize_title(title)
+    if norm_title:
+        digest = hashlib.md5(f"{norm_title}|{norm_url}".encode()).hexdigest()
+        if published:
+            pub_day = str(published)[:10]
+            return f"title:{digest}|{pub_day}"
+        return f"title:{digest}"
+    return None
 
 
 async def _fetch_url(session: aiohttp.ClientSession, url: str) -> tuple[int, str]:

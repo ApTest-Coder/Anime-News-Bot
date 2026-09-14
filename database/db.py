@@ -35,6 +35,31 @@ class NewsDB:
         except Exception as e:
             logging.error(f"Error marking as posted ({link}): {e}")
 
+    async def claim_post(self, link: str, key: str = None) -> bool:
+        """
+        Atomically claim a news item before broadcasting.
+        Returns True if THIS call was the first to claim it (safe to broadcast),
+        False if another call/source already claimed it.
+        Uses MongoDB upsert — atomic, prevents cross-source duplicate posts.
+        """
+        dedup_key = key or link
+        try:
+            result = await self.posted_news.update_one(
+                {"$or": [{"link": link}, {"key": dedup_key}]},
+                {"$setOnInsert": {"link": link, "key": dedup_key}},
+                upsert=True
+            )
+            # upserted_id is non-null only when a new document was inserted
+            return result.upserted_id is not None
+        except Exception as e:
+            logging.error(f"Error claiming post ({link}): {e}")
+            # On DB failure, fall back to check-based dedup (non-blocking)
+            try:
+                existing = await self.posted_news.find_one({"link": link})
+                return existing is None
+            except Exception:
+                return True
+
     async def get_total_posted(self) -> int:
         """Gets the total number of articles ever posted."""
         try:

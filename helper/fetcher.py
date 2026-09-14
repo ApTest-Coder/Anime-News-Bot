@@ -17,6 +17,7 @@ class AnimeNews:
     summary: str
     image_url: str | None   # None = no image, broadcaster sends text-only
     source_url: str
+    guid: str | None = None  # RSS entry id/guid for global dedup
 
 
 # --- 🔍 IMAGE URL VALIDATOR ---
@@ -332,6 +333,7 @@ async def fetch_latest_news() -> list[AnimeNews]:
                     for entry in feed.entries[:3]:
                         title = entry.get("title", "No Title")
                         entry_link = entry.get("link", "")
+                        entry_guid = entry.get("id") or entry.get("guid") or None
 
                         # Clean summary text
                         raw_summary = entry.get("summary", "")
@@ -363,7 +365,8 @@ async def fetch_latest_news() -> list[AnimeNews]:
                             link=entry_link,
                             summary=clean_summary,
                             image_url=final_image,
-                            source_url=rss_url
+                            source_url=rss_url,
+                            guid=entry_guid
                         ))
 
                 except aiohttp.ClientError as e:

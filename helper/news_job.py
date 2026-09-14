@@ -4,6 +4,7 @@ from pyrogram import Client
 from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from helper.fetcher import fetch_latest_news
+from helper.rss_detector import build_dedup_key
 from database.db import db
 from config import *
 
@@ -35,13 +36,14 @@ async def broadcast_news(app: Client):
 
     for item in reversed(news_items):
 
-        # ✅ Check first — skip if already posted
-        if await db.is_posted(item.link):
-            logger.info(f"[Broadcaster] Already posted, skipping: '{item.title}'")
+        # ✅ Atomic global claim — prevents cross-source duplicate posts.
+        # Builds a stable key (guid → normalized URL → hash(title+url)) and
+        # atomically claims it in MongoDB. Only the first claimant broadcasts.
+        dedup_key = build_dedup_key(item.title, item.link, getattr(item, 'guid', None))
+        if not await db.claim_post(item.link, dedup_key):
+            logger.info(f"[Broadcaster] Duplicate detected, skipping: '{item.title}'")
             continue
 
-        # ✅ Lock immediately before sending to prevent double posting
-        await db.mark_posted(item.link)
         logger.info(f"[Broadcaster] 🔒 Locked for posting: '{item.title}'")
 
         try:
