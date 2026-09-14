@@ -173,8 +173,8 @@ async def add_rss_cmd(client: Client, message: Message):
         return await message.reply_text(f"⚠️ This source has already been added.\n`{url}`")
 
     # Check limit (max 2 sources as per existing logic)
-    if len(existing_sources) >= 2:
-        return await message.reply_text("⛔️ **Limit reached:** System restricted to 2 RSS sources maximum.")
+    if len(existing_sources) >= 7:
+        return await message.reply_text("⛔️ **Limit reached:** System restricted to 7 RSS sources maximum.")
 
     # Send processing message
     processing_msg = await message.reply_text("🔍 Analyzing URL...")
