@@ -185,7 +185,7 @@ async def settings_callback(client: Client, callback_query):
 # --- Database Commands (Text Input) ---
 @Client.on_message(filters.command("add_rss") & admin)
 async def add_rss_cmd(client: Client, message: Message):
-    if len(message.command) < 7:
+    if len(message.command) < 2:
         return await message.reply_text(f"⚠️ **{_sm('syntax error')}:** ᴜsᴀɢᴇ: `/add_rss <url>`")
 
     url = message.command[1].strip()
@@ -253,7 +253,7 @@ async def test_post_cmd(client: Client, message: Message):
     Test command: fetch a URL and show posts from the last 30 minutes.
     Does NOT add the URL to RSS sources.
     """
-    if len(message.command) < 7:
+    if len(message.command) < 2:
         return await message.reply_text(f"⚠️ **{_sm('syntax error')}:** ᴜsᴀɢᴇ: `/test_post <url>`")
 
     url = message.command[1].strip()
@@ -385,7 +385,7 @@ async def test_post_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("rem_rss") & admin)
 async def rem_rss_cmd(client: Client, message: Message):
-    if len(message.command) < 7:
+    if len(message.command) < 2:
         return await message.reply_text("⚠️ **sʏɴᴛᴀx ᴇʀʀᴏʀ:** ᴜsᴀɢᴇ: `/rem_rss <url>`")
     await db.rem_rss_db(message.command[1])
     await message.reply_text(f"🗑 **sᴏᴜʀᴄᴇ ᴅᴇᴛᴀᴄʜᴇᴅ:**\n`{message.command[1]}`")
@@ -404,7 +404,7 @@ async def view_rss_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("add_chnl") & admin)
 async def add_chnl_cmd(client: Client, message: Message):
-    if len(message.command) < 7:
+    if len(message.command) < 2:
         return await message.reply_text("⚠️ **sʏɴᴛᴀx ᴇʀʀᴏʀ:** ᴜsᴀɢᴇ: `/add_chnl <@username or ID>`")
     await db.add_channel_db(message.command[1])
     await message.reply_text(f"✅ **ʀᴏᴜᴛᴇ ᴇsᴛᴀʙʟɪsʜᴇᴅ:**\n`{message.command[1]}`")
@@ -412,7 +412,7 @@ async def add_chnl_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("rem_chnl") & admin)
 async def rem_chnl_cmd(client: Client, message: Message):
-    if len(message.command) < 7:
+    if len(message.command) < 2:
         return await message.reply_text("⚠️ **sʏɴᴛᴀx ᴇʀʀᴏʀ:** ᴜsᴀɢᴇ: `/rem_chnl <@username or ID>`")
     await db.rem_channel_db(message.command[1])
     await message.reply_text(f"🗑 **ʀᴏᴜᴛᴇ sᴇᴠᴇʀᴇᴅ:**\n`{message.command[1]}`")
