@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: auto-anime-news-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: LOG_CHANNEL
+        sync: false
+      - key: PORT
+        value: 8080        
