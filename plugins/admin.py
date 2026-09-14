@@ -4,7 +4,10 @@ from pyrogram.enums import ParseMode
 from database.db import db
 from config import *
 from helper.news_job import *
-from helper.rss_detector import detect_and_create_source, _scrape_latest_items, _fetch_url, _validate_url
+from helper.rss_detector import (
+    detect_and_create_source, _scrape_latest_items, _fetch_url, _validate_url,
+    normalize_article_url, normalize_title,
+)
 from datetime import datetime, timezone, timedelta
 
 import logging
@@ -195,9 +198,11 @@ async def add_rss_cmd(client: Client, message: Message):
     if any(s.get("url") == url for s in existing_sources):
         return await message.reply_text(f"⚠️ **{_sm('warning')}:** ᴛʜɪs sᴏᴜʀᴄᴇ ʜᴀs ᴀʟʀᴇᴀᴅʏ ʙᴇᴇɴ ᴀᴅᴅᴇᴅ.\n`{url}`")
 
-    # Check limit (max 2 sources as per existing logic)
-    if len(existing_sources) >= 2:
-        return await message.reply_text(f"⛔️ **{_sm('limit reached')}:** sʏsᴛᴇᴍ ʀᴇsᴛʀɪᴄᴛᴇᴅ ᴛᴏ 2 sᴏᴜʀᴄᴇs ᴍᴀxɪᴍᴜᴍ.")
+    # Check limit (from config — MAX_RSS_SOURCES, configurable by admin)
+    if len(existing_sources) >= MAX_RSS_SOURCES:
+        return await message.reply_text(
+            f"⛔️ **{_sm('limit reached')}:** sʏsᴛᴇᴍ sᴇᴛ ᴛᴏ {MAX_RSS_SOURCES} sᴏᴜʀᴄᴇs ᴍᴀxɪᴍᴜᴍ."
+        )
 
     # Send processing message
     processing_msg = await message.reply_text(f"🔍 **{_sm('analyzing')}** {url}...")
@@ -285,6 +290,22 @@ async def test_post_cmd(client: Client, message: Message):
                 return await processing_msg.edit_text(
                     f"❌ **{_sm('error')}:** ɴᴏ ᴀʀᴛɪᴄʟᴇs/ᴘᴏsᴛs ᴅᴇᴛᴇᴄᴛᴇᴅ ᴏɴ ᴛʜɪs ᴘᴀɢᴇ."
                 )
+
+            # In-execution dedup: remove duplicate links AND duplicate titles
+            seen_urls = set()
+            seen_titles = set()
+            unique_items = []
+            for item in items:
+                norm_url = normalize_article_url(item.get("link", ""))
+                norm_title = normalize_title(item.get("title", ""))
+                if not norm_url or norm_url in seen_urls:
+                    continue
+                if norm_title and norm_title in seen_titles:
+                    continue
+                seen_urls.add(norm_url)
+                seen_titles.add(norm_title)
+                unique_items.append(item)
+            items = unique_items
 
             # Filter for posts from last 30 minutes
             now = datetime.now(timezone.utc)
