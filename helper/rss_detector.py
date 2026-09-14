@@ -638,6 +638,38 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
         if len(items) >= 10:
             break
 
+    # Strategy 3b: listing/tag page <a href> fallback (Crunchyroll /news/,
+    # IMDb /news/..., tag/list/category pages). Runs only on news-like pages.
+    # Uses a lower title threshold and enriches weak anchor text from the
+    # nearest heading / aria-label / title attribute. Everything else still
+    # goes through add_item() guards (URL validation, generic-title filter,
+    # Crunchyroll /news/ preference, dedup).
+    is_news_listing = (
+        is_crunchyroll
+        or any(seg in base_url for seg in ("/news/", "/tag/", "/list/", "/category/", "/category_listing"))
+    )
+    if is_news_listing and len(items) < 10:
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag.get("href", "")
+            if not href.startswith("http"):
+                href = urljoin(base_url, href)
+
+            title = a_tag.get_text(" ", strip=True)
+            if len(title) < 8:
+                # Enrich weak anchor text from nearby heading, then attributes
+                heading = a_tag.find_parent(["h1", "h2", "h3", "h4"])
+                if heading:
+                    heading_text = heading.get_text(" ", strip=True)
+                    if len(heading_text) >= 8:
+                        title = heading_text
+                if len(title) < 8:
+                    title = a_tag.get("aria-label") or a_tag.get("title") or title
+
+            add_item(title, href)
+
+            if len(items) >= 10:
+                break
+
     if items:
         logger.info(f"[RSSDetector] Scraper found {len(items)} item(s) on {base_url}")
     else:
