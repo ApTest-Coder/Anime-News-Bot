@@ -6,7 +6,7 @@ from config import *
 from helper.news_job import *
 from helper.rss_detector import (
     detect_and_create_source, _scrape_latest_items, _fetch_url, _validate_url,
-    normalize_article_url, normalize_title,
+    normalize_article_url, normalize_title, _parse_timestamp,
 )
 from datetime import datetime, timezone, timedelta
 
@@ -278,9 +278,30 @@ async def test_post_cmd(client: Client, message: Message):
         async with aiohttp.ClientSession() as session:
             status, content = await _fetch_url(session, url)
 
-            if status != 200 or not content:
+            # --- Differentiated diagnostics instead of a single generic failure ---
+            if status == 0:
                 return await processing_msg.edit_text(
-                    f"❌ **{_sm('error')}:** ᴄᴏᴜʟᴅ ɴᴏᴛ ғᴇᴛᴄʜ ᴛʜᴇ ᴜʀʟ (sᴛᴀᴛᴜs: {status})"
+                    f"❌ **{_sm('fetch failed')}:** ᴄᴏᴜʟᴅ ɴᴏᴛ ʀᴇᴀᴄʜ `{url}` (ᴅɴs/ᴛɪᴍᴇᴏᴜᴛ/ɴᴇᴛᴡᴏʀᴋ ᴇʀʀᴏʀ)."
+                )
+            if status in (401, 403):
+                return await processing_msg.edit_text(
+                    f"🚫 **{_sm('blocked')}:** ᴛʜᴇ ᴡᴇʙsɪᴛᴇ ʀᴇᴛᴜʀɴᴇᴅ sᴛᴀᴛᴜs {status} (ᴀᴄᴄᴇss/ʙᴏᴛ ʙʟᴏᴄᴋᴇᴅ)."
+                )
+            if status == 429:
+                return await processing_msg.edit_text(
+                    f"⏳ **{_sm('rate limited')}:** sᴛᴀᴛᴜs 429 (ᴛᴏᴏ ᴍᴀɴʏ ʀᴇǫᴜᴇsᴛs). ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ."
+                )
+            if status >= 500:
+                return await processing_msg.edit_text(
+                    f"⚠️ **{_sm('server error')}:** ᴛʜᴇ ᴡᴇʙsɪᴛᴇ ʀᴇᴛᴜʀɴᴇᴅ sᴛᴀᴛᴜs {status}."
+                )
+            if not (200 <= status < 300):
+                return await processing_msg.edit_text(
+                    f"❌ **{_sm('fetch failed')}:** ᴜɴʜᴀɴᴅʟᴇᴅ sᴛᴀᴛᴜs {status}."
+                )
+            if not content:
+                return await processing_msg.edit_text(
+                    f"⚠️ **{_sm('html fetched, but empty')}:** sᴛᴀᴛᴜs {status} ʙᴜᴛ ɴᴏ ᴛᴇxᴛ ʀᴇᴄᴇɪᴠᴇᴅ."
                 )
 
             # Try to extract items
@@ -288,7 +309,9 @@ async def test_post_cmd(client: Client, message: Message):
 
             if not items:
                 return await processing_msg.edit_text(
-                    f"❌ **{_sm('error')}:** ɴᴏ ᴀʀᴛɪᴄʟᴇs/ᴘᴏsᴛs ᴅᴇᴛᴇᴄᴛᴇᴅ ᴏɴ ᴛʜɪs ᴘᴀɢᴇ."
+                    f"⚠️ **{_sm('html fetched, but no articles were extracted')}.**\n"
+                    f"🔗 {url}\n"
+                    f"**{_sm('status')}:** {status}"
                 )
 
             # In-execution dedup: remove duplicate links AND duplicate titles
@@ -312,34 +335,40 @@ async def test_post_cmd(client: Client, message: Message):
             cutoff = now - timedelta(minutes=30)
 
             recent_items = []
+            had_timestamp = False
             for item in items:
                 published_str = item.get("published", "")
                 if published_str:
-                    try:
-                        from helper.rss_detector import _parse_timestamp
-                        pub_dt = _parse_timestamp(published_str)
-                        if pub_dt and pub_dt >= cutoff:
+                    pub_dt = _parse_timestamp(published_str)
+                    if pub_dt:
+                        had_timestamp = True
+                        if pub_dt >= cutoff:
                             recent_items.append(item)
-                    except Exception:
-                        pass
 
-            # If no recent items found, show the newest detected
+            newest = items[0] if items else None
+            newest_time = newest.get("published", "") if newest else ""
+
             if not recent_items:
-                # Show the newest item as "last detected"
-                newest = items[0] if items else None
-                newest_time = newest.get("published", "") if newest else ""
-
-                text = (
-                    f"ℹ️ **{_sm('last 30 minutes mein koi naya post nahin mila.')}\n\n"
-                    f"**{_sm('last detected')}:**\n"
-                    f"📰 {newest['title'] if newest else 'N/A'}\n"
-                )
-                if newest_time:
-                    text += f"📅 **{_sm('published')}:** `{newest_time}`\n"
-                if newest:
-                    text += f"🔗 {newest['link']}\n"
-                text += f"\n**{_sm('source')}:** {url}"
-
+                if not had_timestamp:
+                    # Case C: articles found, but no publication time available
+                    text = (
+                        f"⚠️ **{_sm('articles detected, but publish time is unavailable')}.**\n\n"
+                        f"📰 {newest['title'] if newest else 'N/A'}\n"
+                        f"🔗 {newest['link'] if newest else ''}\n\n"
+                        f"**{_sm('source')}:** {url}"
+                    )
+                else:
+                    # Case D: articles found, timestamps exist, none within 30 min
+                    text = (
+                        f"ℹ️ **{_sm('no new posts in the last 30 minutes')}.**\n\n"
+                        f"**{_sm('last detected')}:**\n"
+                        f"📰 {newest['title'] if newest else 'N/A'}\n"
+                    )
+                    if newest_time:
+                        text += f"📅 **{_sm('published')}:** `{newest_time}`\n"
+                    if newest:
+                        text += f"🔗 {newest['link']}\n"
+                    text += f"\n**{_sm('source')}:** {url}"
                 return await processing_msg.edit_text(text)
 
             # Send recent items as test posts (max 5)

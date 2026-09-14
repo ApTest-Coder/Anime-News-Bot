@@ -7,7 +7,22 @@ logging.basicConfig(level=logging.INFO)
 
 class NewsDB:
     def __init__(self, db_url: str, db_name: str):
-        self.client = motor.motor_asyncio.AsyncIOMotorClient(db_url)
+        # Validate the MongoDB URI early so an empty/malformed value raises a
+        # clear message instead of PyMongo's obscure "Empty host (or extra
+        # comma in host list)". Credentials stay in env vars (DB_URI).
+        uri = str(db_url or "").strip()
+        if not uri:
+            raise RuntimeError(
+                "MongoDB URI is EMPTY. Set the 'DB_URI' environment variable in "
+                "Render/HeroKu to the full connection string "
+                "(mongodb://... or mongodb+srv://...)."
+            )
+        if not uri.startswith(("mongodb://", "mongodb+srv://")):
+            raise RuntimeError(
+                f"MongoDB URI is malformed (must start with 'mongodb://' or "
+                f"'mongodb+srv://'). Current value starts with: {uri[:40]!r}"
+            )
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(uri)
         self.database = self.client[db_name]
 
         # Collections

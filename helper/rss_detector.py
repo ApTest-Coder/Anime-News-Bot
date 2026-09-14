@@ -109,28 +109,58 @@ def build_dedup_key(title: str, url: str, guid: str = None, published: str = Non
     return None
 
 
-async def _fetch_url(session: aiohttp.ClientSession, url: str) -> tuple[int, str]:
+async def _fetch_url(
+    session: aiohttp.ClientSession,
+    url: str,
+    retries: int = 1,
+) -> tuple[int, str]:
     """
     Fetch URL and return (status_code, content).
-    Returns (0, "") on any failure.
+
+    - follows redirects
+    - sends browser-like headers to reduce blocking
+    - retries soft-fail statuses (202/429/503) once with a short delay
+    - returns the real HTTP status even for 403/404/429/5xx so callers can
+      decide; returns (0, "") only on network/DNS/timeout errors.
     """
-    try:
-        async with session.get(
-            url,
-            timeout=REQUEST_TIMEOUT,
-            headers={"User-Agent": USER_AGENT}
-        ) as resp:
-            content = await resp.text()
-            return resp.status, content
-    except aiohttp.ClientError as e:
-        logger.error(f"[RSSDetector] Network error for '{url}': {e}")
-        return 0, ""
-    except asyncio.TimeoutError:
-        logger.error(f"[RSSDetector] Timeout for '{url}'")
-        return 0, ""
-    except Exception as e:
-        logger.error(f"[RSSDetector] Unexpected error for '{url}': {e}")
-        return 0, ""
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+    }
+    for attempt in range(retries + 1):
+        try:
+            async with session.get(
+                url,
+                timeout=REQUEST_TIMEOUT,
+                headers=headers,
+                allow_redirects=True
+            ) as resp:
+                content = await resp.text()
+                status = resp.status
+                # 202/429/503 may succeed on a retry — but only re-request if
+                # we still have attempts left.
+                if status in (202, 429, 503) and attempt < retries:
+                    await asyncio.sleep(0.5)
+                    continue
+                return status, content
+        except aiohttp.ServerDisconnectedError:
+            if attempt < retries:
+                await asyncio.sleep(0.5)
+                continue
+            logger.error(f"[RSSDetector] Server disconnected for '{url}'")
+            return 0, ""
+        except aiohttp.ClientError as e:
+            logger.error(f"[RSSDetector] Network error for '{url}': {e}")
+            return 0, ""
+        except asyncio.TimeoutError:
+            logger.error(f"[RSSDetector] Timeout for '{url}'")
+            return 0, ""
+        except Exception as e:
+            logger.error(f"[RSSDetector] Unexpected error for '{url}': {e}")
+            return 0, ""
+    return 0, ""
 
 
 def _is_valid_feed(feed) -> bool:
@@ -354,6 +384,111 @@ def _parse_jsonld_article(data: dict, base_url: str) -> dict | None:
     }
 
 
+# Titles that are never real article titles (nav, page titles, CTAs)
+_GENERIC_TITLES = {
+    "news", "home", "login", "log in", "sign in", "sign up", "register",
+    "subscribe", "watch now", "watch", "read more", "read full", "view all",
+    "load more", "crunchyroll news", "imdb", "anime news", "about us", "about",
+    "contact", "contact us", "privacy", "privacy policy", "terms",
+    "terms of use", "terms of service", "anime", "web", "menu", "search",
+}
+
+
+def _is_meaningful_title(title: str) -> bool:
+    """Reject generic nav/page/CTA titles; keep real article titles."""
+    if not title:
+        return False
+    t = title.strip().lower()
+    if len(t) < 5:
+        return False
+    if t in _GENERIC_TITLES:
+        return False
+    # Reject pure CTA patterns like "Read more", "See all", "Load more"
+    if re.fullmatch(r"(read|view|see|show|load|watch|listen)\s+(more|all|full|now|latest)", t):
+        return False
+    return True
+
+
+def _extract_published_from_dict(node: dict) -> str:
+    """Find a publication timestamp inside an embedded JSON object."""
+    for key in (
+        "datePublished", "dateModified", "published", "publishedAt",
+        "publishDate", "createdAt", "updatedAt", "sortDate", "date",
+        "releaseDate", "postDate",
+    ):
+        val = node.get(key)
+        if isinstance(val, str) and val:
+            dt = _parse_timestamp(val)
+            if dt:
+                return dt.isoformat()
+    # Some sites use nested {"iso": "...", "datetime": "..."}
+    for key in ("dateTime", "startDate", "displayDate"):
+        val = node.get(key)
+        if isinstance(val, str) and val:
+            dt = _parse_timestamp(val)
+            if dt:
+                return dt.isoformat()
+    return ""
+
+
+def _walk_embedded_articles(node, base_url: str):
+    """
+    Recursively walk an embedded JSON structure (Next.js __NEXT_DATA__,
+    application/json, etc.) and yield article-like dictionaries that contain
+    a title + url pair.
+    """
+    if isinstance(node, dict):
+        title = node.get("headline") or node.get("title") or node.get("name") or node.get("label") or ""
+        url = node.get("url") or node.get("link") or node.get("href") or ""
+        if (isinstance(title, str) and isinstance(url, str) and url and title):
+            if not str(url).startswith("http"):
+                url = urljoin(base_url, str(url))
+            item = {
+                "title": str(title).strip(),
+                "link": url,
+                "published": _extract_published_from_dict(node),
+            }
+            if _is_meaningful_title(item["title"]) and _is_valid_article_url(item["link"], base_url):
+                yield item
+        for value in node.values():
+            yield from _walk_embedded_articles(value, base_url)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_embedded_articles(value, base_url)
+
+
+def _extract_embedded_json_items(soup: BeautifulSoup, base_url: str) -> list[dict]:
+    """
+    Extract articles from common embedded JSON page-state structures:
+      - <script id="__NEXT_DATA__"> (Next.js / Crunchyroll)
+      - <script type="application/json">
+      - other JSON script bodies
+    Returns normalized items: {"title", "link", "published"}.
+    """
+    items = []
+    seen = set()
+    for script in soup.find_all("script"):
+        script_id = script.get("id", "")
+        script_type = script.get("type", "")
+        if script_id != "__NEXT_DATA__" and "application/json" not in script_type and "ld+json" not in script_type:
+            continue
+        raw = script.string or script.get_text()
+        if not raw or not raw.strip():
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for article in _walk_embedded_articles(data, base_url):
+            key = article["link"]
+            if key not in seen:
+                seen.add(key)
+                items.append(article)
+    if items:
+        logger.info(f"[RSSDetector] Embedded JSON found {len(items)} candidate item(s)")
+    return items
+
+
 def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
     """
     Scrape latest items from a webpage as fallback.
@@ -373,6 +508,8 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
             return
         if link in seen_links:
             return
+        if not _is_meaningful_title(title):
+            return
         if not _is_valid_article_url(link, base_url):
             return
         seen_links.add(link)
@@ -388,6 +525,14 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
         add_item(item["title"], item["link"], item["published"])
     if items:
         logger.info(f"[RSSDetector] JSON-LD found {len(items)} item(s)")
+        return items[:10]
+
+    # Strategy 0b: embedded JSON page-state (__NEXT_DATA__, application/json)
+    embedded_items = _extract_embedded_json_items(soup, base_url)
+    for item in embedded_items:
+        add_item(item["title"], item["link"], item["published"])
+    if items:
+        logger.info(f"[RSSDetector] Embedded JSON found {len(items)} item(s)")
         return items[:10]
 
     # Strategy 1: Article elements with headings
@@ -475,7 +620,7 @@ async def _create_scraper_source(session: aiohttp.ClientSession, url: str) -> di
     Returns source dict if scraping succeeds, None otherwise.
     """
     status, content = await _fetch_url(session, url)
-    if status != 200 or not content:
+    if not (200 <= status < 300) or not content:
         return None
 
     items = _scrape_latest_items(content, url)
@@ -586,7 +731,7 @@ async def scrape_source_for_updates(source: dict) -> list[dict]:
 
     async with aiohttp.ClientSession() as session:
         status, content = await _fetch_url(session, url)
-        if status != 200 or not content:
+        if not (200 <= status < 300) or not content:
             return []
 
         items = _scrape_latest_items(content, url)
