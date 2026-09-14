@@ -6,7 +6,7 @@ from config import *
 from helper.news_job import *
 from helper.rss_detector import (
     detect_and_create_source, _scrape_latest_items, _fetch_url, _validate_url,
-    normalize_article_url, normalize_title, _parse_timestamp,
+    normalize_article_url, normalize_title, _parse_timestamp, _try_parse_feed_items,
 )
 from datetime import datetime, timezone, timedelta
 
@@ -304,8 +304,15 @@ async def test_post_cmd(client: Client, message: Message):
                     f"⚠️ **{_sm('html fetched, but empty')}:** sᴛᴀᴛᴜs {status} ʙᴜᴛ ɴᴏ ᴛᴇxᴛ ʀᴇᴄᴇɪᴠᴇᴅ."
                 )
 
-            # Try to extract items
-            items = _scrape_latest_items(content, url)
+            # Strategy 1: try RSS/Atom feed first
+            items = _try_parse_feed_items(content, url)
+            if items is not None:
+                logger.info(f"[test_post] RSS/Atom feed parsed for {url}: {len(items)} item(s)")
+
+            # Strategy 2+: fall back to HTML scraping (JSON-LD → embedded JSON
+            # → article/card containers → headings → article links)
+            if not items:
+                items = _scrape_latest_items(content, url)
 
             if not items:
                 return await processing_msg.edit_text(

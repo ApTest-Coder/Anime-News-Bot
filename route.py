@@ -1,6 +1,9 @@
 from aiohttp import web
-from config import PORT
-import logging
+
+# NOTE: bot.py does `runner = web.AppRunner(await web_server())`, so this
+# function MUST return an aiohttp.web.Application instance. It must NOT start
+# its own runner/site (bot.py does that) or the AppRunner receives None and
+# fails with "The first argument should be web.Application instance, got None".
 
 async def handle(request):
     return web.Response(text="Bot is running and healthy!")
@@ -8,8 +11,4 @@ async def handle(request):
 async def web_server():
     app = web.Application()
     app.add_routes([web.get('/', handle)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    logging.info(f"Health-check web server started on port {PORT}")
+    return app

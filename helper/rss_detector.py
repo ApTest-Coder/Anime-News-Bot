@@ -48,7 +48,7 @@ SKIP_PATTERNS = [
     "instagram", "youtube", "tiktok", "linkedin",
 ]
 
-SKIP_EXTENSIONS = [".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".zip", ".ico", ".woff", ".ttf"]
+SKIP_EXTENSIONS = [".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".pdf", ".zip", ".ico", ".woff", ".ttf", ".webm", ".mp4"]
 # Tracking query parameters to strip during URL normalization
 TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "ref", "referrer", "source", "mc_cid")
 
@@ -413,8 +413,8 @@ def _extract_published_from_dict(node: dict) -> str:
     """Find a publication timestamp inside an embedded JSON object."""
     for key in (
         "datePublished", "dateModified", "published", "publishedAt",
-        "publishDate", "createdAt", "updatedAt", "sortDate", "date",
-        "releaseDate", "postDate",
+        "publishDate", "publishedDate", "createdAt", "updatedAt", "sortDate",
+        "date", "releaseDate", "postDate",
     ):
         val = node.get(key)
         if isinstance(val, str) and val:
@@ -439,7 +439,15 @@ def _walk_embedded_articles(node, base_url: str):
     """
     if isinstance(node, dict):
         title = node.get("headline") or node.get("title") or node.get("name") or node.get("label") or ""
-        url = node.get("url") or node.get("link") or node.get("href") or ""
+        url = (
+            node.get("url") or node.get("link") or node.get("href")
+            or node.get("canonicalLink") or ""
+        )
+        if not url:
+            # Some sites (e.g. Crunchyroll) store the article path in `slug`
+            slug = node.get("slug")
+            if isinstance(slug, str) and (slug.startswith("/") or slug.startswith("http")):
+                url = slug
         if (isinstance(title, str) and isinstance(url, str) and url and title):
             if not str(url).startswith("http"):
                 url = urljoin(base_url, str(url))
@@ -461,29 +469,62 @@ def _extract_embedded_json_items(soup: BeautifulSoup, base_url: str) -> list[dic
     """
     Extract articles from common embedded JSON page-state structures:
       - <script id="__NEXT_DATA__"> (Next.js / Crunchyroll)
+      - <script id="__APP_DATA__"> / other page-state / apollo-state ids
       - <script type="application/json">
-      - other JSON script bodies
+      - other JSON script bodies (fallback sweep)
     Returns normalized items: {"title", "link", "published"}.
     """
     items = []
     seen = set()
+
+    def add_unique(article):
+        key = article["link"]
+        if key not in seen:
+            seen.add(key)
+            items.append(article)
+
+    id_hints = ("next_data", "app_data", "apollo", "page_state", "pagedata", "state")
+    primary = []
+
     for script in soup.find_all("script"):
-        script_id = script.get("id", "")
-        script_type = script.get("type", "")
-        if script_id != "__NEXT_DATA__" and "application/json" not in script_type and "ld+json" not in script_type:
+        script_id = (script.get("id") or "").lower()
+        script_type = (script.get("type") or "").lower()
+        if "ld+json" in script_type:
+            continue  # handled by JSON-LD strategy
+        is_id_hint = any(hint in script_id for hint in id_hints)
+        in_type_json = "json" in script_type
+        if not (is_id_hint or in_type_json):
             continue
+        primary.append(script)
+
+    def extract(script):
         raw = script.string or script.get_text()
         if not raw or not raw.strip():
-            continue
+            return
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            continue
+            return
         for article in _walk_embedded_articles(data, base_url):
-            key = article["link"]
-            if key not in seen:
-                seen.add(key)
-                items.append(article)
+            add_unique(article)
+
+    for script in primary:
+        extract(script)
+
+    # Fallback sweep: try remaining scripts whose body parses as JSON. This
+    # handles Next.js pages served with a bare `<script>` containing state JSON.
+    if not items:
+        for script in soup.find_all("script"):
+            raw = script.string or script.get_text()
+            if not raw or not raw.strip():
+                continue
+            stripped = raw.strip()
+            if not (stripped.startswith("{") or stripped.startswith("[")):
+                continue
+            extract(script)
+            if items:
+                break
+
     if items:
         logger.info(f"[RSSDetector] Embedded JSON found {len(items)} candidate item(s)")
     return items
@@ -492,12 +533,16 @@ def _extract_embedded_json_items(soup: BeautifulSoup, base_url: str) -> list[dic
 def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
     """
     Scrape latest items from a webpage as fallback.
-    Uses multiple strategies: JSON-LD, article elements, headings, links.
+    Runs ALL extraction strategies cumulatively — a failure (or low yield) in
+    one strategy NEVER stops later strategies:
+      JSON-LD → embedded JSON → <article>/cards → headings → article links
     Normalizes items into common structure: {"title", "link", "published"}.
     """
     soup = BeautifulSoup(html, "html.parser")
     items = []
     seen_links = set()
+    base_domain = urlparse(base_url).netloc
+    is_crunchyroll = "crunchyroll" in base_domain
 
     def add_item(title: str, link: str, published: str = ""):
         if not title or not link:
@@ -512,6 +557,9 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
             return
         if not _is_valid_article_url(link, base_url):
             return
+        # Crunchyroll tag/listing pages: only real /news/ or /article/ URLs.
+        if is_crunchyroll and "/news/" not in link and "/article/" not in link:
+            return
         seen_links.add(link)
         items.append({
             "title": title,
@@ -520,19 +568,15 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
         })
 
     # Strategy 0: JSON-LD structured data
-    jsonld_items = _extract_jsonld_items(soup, base_url)
-    for item in jsonld_items:
+    for item in _extract_jsonld_items(soup, base_url):
         add_item(item["title"], item["link"], item["published"])
-    if items:
-        logger.info(f"[RSSDetector] JSON-LD found {len(items)} item(s)")
+    if len(items) >= 10:
         return items[:10]
 
     # Strategy 0b: embedded JSON page-state (__NEXT_DATA__, application/json)
-    embedded_items = _extract_embedded_json_items(soup, base_url)
-    for item in embedded_items:
+    for item in _extract_embedded_json_items(soup, base_url):
         add_item(item["title"], item["link"], item["published"])
-    if items:
-        logger.info(f"[RSSDetector] Embedded JSON found {len(items)} item(s)")
+    if len(items) >= 10:
         return items[:10]
 
     # Strategy 1: Article elements with headings
@@ -555,9 +599,8 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
                     published = time_tag.get("datetime", "") or time_tag.get_text(strip=True)
 
                 add_item(title, link, published)
-            if items:
-                logger.info(f"[RSSDetector] Article elements found {len(items)} item(s)")
-                return items[:10]
+    if len(items) >= 10:
+        return items[:10]
 
     # Strategy 2: Headings with adjacent links
     for heading_tag in soup.find_all(["h1", "h2", "h3"]):
@@ -576,13 +619,10 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
             if link and not link.startswith("http"):
                 link = urljoin(base_url, link)
             add_item(title, link)
-
-    if items:
-        logger.info(f"[RSSDetector] Headings found {len(items)} item(s)")
+    if len(items) >= 10:
         return items[:10]
 
     # Strategy 3: Links that look like article titles
-    base_domain = urlparse(base_url).netloc
     for a_tag in soup.find_all("a", href=True):
         href = a_tag.get("href", "")
         title = a_tag.get_text(strip=True)
@@ -593,25 +633,60 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
         if not href.startswith("http"):
             href = urljoin(base_url, href)
 
-        if not _is_valid_article_url(href, base_url):
-            continue
-
-        # For Crunchyroll, prefer /news/ URLs
-        if "crunchyroll" in base_domain:
-            if "/news/" not in href and "/article/" not in href:
-                continue
-
         add_item(title, href)
 
         if len(items) >= 10:
             break
 
     if items:
-        logger.info(f"[RSSDetector] Links found {len(items)} item(s)")
+        logger.info(f"[RSSDetector] Scraper found {len(items)} item(s) on {base_url}")
     else:
         logger.warning(f"[RSSDetector] No items found on page: {base_url}")
 
     return items[:10]
+
+
+def _normalize_feed_items(feed, source_url: str) -> list[dict]:
+    """
+    Convert feedparser entries into the same normalized item structure:
+    {"title", "link", "published"}.
+    """
+    items = []
+    for entry in feed.entries[:10]:
+        title = entry.get("title", "")
+        link = entry.get("link", "")
+        if not title or not link:
+            continue
+        published = ""
+        published_struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+        if published_struct:
+            try:
+                published_dt = datetime(*published_struct[:6], tzinfo=timezone.utc)
+                published = published_dt.isoformat()
+            except (TypeError, ValueError):
+                published = ""
+        items.append({
+            "title": title.strip(),
+            "link": link,
+            "published": published,
+        })
+    return items
+
+
+def _try_parse_feed_items(content: str, source_url: str) -> list[dict] | None:
+    """
+    Attempt to parse content as an RSS/Atom feed.
+    Returns normalized items if a valid feed with entries is found, else None.
+    """
+    if not content or not content.strip():
+        return None
+    try:
+        feed = feedparser.parse(content)
+        if feed.entries:
+            return _normalize_feed_items(feed, source_url)
+    except Exception as e:
+        logger.debug(f"[RSSDetector] Feed parse skipped for {source_url}: {e}")
+    return None
 
 
 async def _create_scraper_source(session: aiohttp.ClientSession, url: str) -> dict | None:

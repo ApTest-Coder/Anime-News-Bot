@@ -112,6 +112,27 @@ async def fetch_image_from_article(session: aiohttp.ClientSession, article_url: 
         return None
 
 
+# Whole-candidate words that are NEVER real anime titles (rejected only when
+# the ENTIRE candidate is one of these — never stripped from valid titles)
+GENERIC_ANIME_CANDIDATES = {
+    "web", "anime", "news", "manga", "manhwa", "manhua", "donghua",
+    "tv", "show", "series", "official", "update", "updates", "creator",
+    "announces", "announced", "trailer", "video", "review", "episode",
+    "episodes", "part", "season", "film", "movie", "ova", "special",
+    "cast", "staff",
+}
+
+
+def is_generic_anime_candidate(name: str) -> bool:
+    """True only when the WHOLE candidate is a generic word (never a title)."""
+    if not name:
+        return True
+    cleaned = name.strip().lower().strip('"\'')
+    if not cleaned:
+        return True
+    return cleaned in GENERIC_ANIME_CANDIDATES
+
+
 # --- 🔤 REGEX-BASED ANIME NAME EXTRACTOR (MULTI-CANDIDATE) ---
 def extract_anime_names(title: str) -> list[str]:
     """
@@ -173,6 +194,13 @@ def extract_anime_names(title: str) -> list[str]:
             candidates.append(result)
             seen.add(result)
 
+    # Drop whole-candidate generic words (e.g. "Web", "Anime") before logging
+    # and returning, so AniList never queries them if a better one exists.
+    filtered = [c for c in candidates if not is_generic_anime_candidate(c)]
+    if len(filtered) != len(candidates):
+        logging.info(f"[NameExtract] ⏭️ Skipped {len(candidates) - len(filtered)} generic candidate(s)")
+    candidates = filtered
+
     if not candidates:
         logging.info(f"[NameExtract] ❌ No pattern matched: '{title}'")
     else:
@@ -225,6 +253,10 @@ async def get_anilist_poster(session: aiohttp.ClientSession, title: str, retries
 
     # Try each candidate until we find an image
     for search_term in search_terms:
+        # Safety net: never query AniList with a generic whole-word candidate.
+        if is_generic_anime_candidate(search_term):
+            logging.info(f"[AniList] ⏭️ Skipping generic candidate: '{search_term}'")
+            continue
         logging.info(f"[AniList] 🔍 Trying: '{search_term}'")
 
         for attempt in range(1, retries + 1):
