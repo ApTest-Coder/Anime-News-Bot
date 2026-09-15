@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from dataclasses import dataclass
 from database.db import db
 from helper.rss_detector import scrape_source_for_updates
+from helper.anime_mirchi import get_new_articles as get_anime_mirchi_articles
 from config import *
 
 
@@ -447,6 +448,35 @@ async def fetch_latest_news() -> list[AnimeNews]:
 
                 except Exception as e:
                     logging.error(f"[Fetcher] 💥 Error scraping source '{source_url}': {e}")
+
+            elif source_type == "anime_mirchi":
+                # --- Anime Mirchi source (Phase 1: extraction only, no enrichment) ---
+                try:
+                    articles, newest_seen = await get_anime_mirchi_articles(
+                        session, source.get("last_item")
+                    )
+
+                    # Track the newest article URL for next cycle
+                    if newest_seen and newest_seen != source.get("last_item"):
+                        await db.update_source(source_url, {"last_item": newest_seen})
+
+                    for art in articles:
+                        news_items.append(AnimeNews(
+                            title=art.get("title") or "No Title",
+                            link=art.get("canonical") or art.get("url", ""),
+                            summary=art.get("summary") or "",
+                            image_url=art.get("image"),
+                            source_url=source_url,
+                            guid=art.get("url") or art.get("canonical"),
+                        ))
+
+                    if articles:
+                        logging.info(
+                            f"[Fetcher] 🍜 Anime Mirchi: {len(articles)} new article(s) from '{source_url}'"
+                        )
+
+                except Exception as e:
+                    logging.error(f"[Fetcher] 💥 Anime Mirchi error for '{source_url}': {e}")
 
     logging.info(f"[Fetcher] ✅ Done. {len(news_items)} item(s) ready to broadcast.")
     return news_items

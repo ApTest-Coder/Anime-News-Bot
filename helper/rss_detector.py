@@ -18,6 +18,9 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, urlencode, parse_qsl, urlunparse
 from datetime import datetime, timezone, timedelta
 
+from helper.anime_mirchi import SOURCE_NAME as _ANIME_MIRCHI_NAME
+from helper.anime_mirchi import SOURCE_TYPE as _ANIME_MIRCHI_TYPE
+
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -865,6 +868,22 @@ async def detect_and_create_source(url: str) -> dict | None:
     if not _validate_url(url):
         logger.warning(f"[RSSDetector] Invalid or blocked URL: {url}")
         return None
+
+    # Step 0: Anime Mirchi dedicated source (Phase 1).
+    # The site is treated as an authoritative scraper source; hostname match
+    # keeps /add_rss cheap (no extra HTTP request during detection).
+    if urlparse(url).netloc.lower().removeprefix("www.") == "animemirchi.com":
+        result = {
+            "type": _ANIME_MIRCHI_TYPE,
+            "url": url,
+            "feed_url": url,
+            "title": _ANIME_MIRCHI_NAME,
+        }
+        result["enabled"] = True
+        result["created_at"] = datetime.now(timezone.utc)
+        result["last_item"] = None
+        logger.info(f"[RSSDetector] Anime Mirchi source created: {url}")
+        return result
 
     async with aiohttp.ClientSession() as session:
         # Step 1: Try direct feed
