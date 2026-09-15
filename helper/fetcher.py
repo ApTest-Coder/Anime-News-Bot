@@ -389,7 +389,7 @@ async def fetch_latest_news() -> list[AnimeNews]:
                         raw_summary = entry.get("summary", "")
                         soup = BeautifulSoup(raw_summary, "html.parser")
                         clean_summary = soup.get_text().strip()
-                                                if len(clean_summary) > 250:
+                        if len(clean_summary) > 250:
                             clean_summary = clean_summary[:250] + "..."
 
                         # 🥇 Try AniList poster first (tries ALL regex candidates)
