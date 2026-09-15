@@ -463,13 +463,18 @@ async def rem_rss_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("view_rss") & admin)
 async def view_rss_cmd(client: Client, message: Message):
-    feeds = await db.get_all_rss()
-    text = (
-        "📡 **ᴀᴄᴛɪᴠᴇ ʀss ꜰᴇᴇᴅs:**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        + ("\n".join(f"🟢 `{f}`" for f in feeds) if feeds else "⚠️ ɴᴏ ʀss ꜰᴇᴇᴅs ᴄᴏɴꜰɪɢᴜʀᴇᴅ.")
-    )
-    await message.reply_text(text)
+    sources = await db.get_all_sources()
+    if not sources:
+        return await message.reply_text("⚠️ **sᴏʀᴄᴇs:** ɴᴏ ᴍᴏɴɪᴛᴏʀᴇᴅ sᴏᴜʀᴄᴇs ᴀᴄᴛɪᴠᴇ.\n\nsᴏʀᴄᴇs ᴀʀᴇ ᴀᴅᴅᴇᴅ ᴠɪᴀ `/add_rss <url>`.\ngᴏ ᴀᴅᴅ sᴏᴍᴇ ᴘᴏᴡᴇʀᴇᴅ sᴏᴜʀᴄᴇs ғɪʀsᴛ!")
+
+    lines = ["📡 **ᴀᴄᴛɪᴠᴇ ᴍᴏɴɪᴛᴏʀᴇᴅ sᴏᴜʀᴄᴇs:**", "━━━━━━━━━━━━━━━━━━━━"]
+    for src in sources:
+        src_type = src.get("type", "rss").upper()
+        src_title = src.get("title", src.get("url", "Unknown"))
+        src_url = src.get("url", "")
+        lines.append(f"🔹 **[{src_type}] {src_title}**\n`{src_url}`")
+
+    await message.reply_text("\n".join(lines))
 
 
 @Client.on_message(filters.command("add_chnl") & admin)
