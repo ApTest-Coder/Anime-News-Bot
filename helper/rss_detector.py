@@ -649,26 +649,57 @@ def _scrape_latest_items(html: str, base_url: str) -> list[dict]:
         or any(seg in base_url for seg in ("/news/", "/tag/", "/list/", "/category/", "/category_listing"))
     )
     if is_news_listing and len(items) < 10:
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag.get("href", "")
-            if not href.startswith("http"):
-                href = urljoin(base_url, href)
+        # --- Crunchyroll / Next.js shell detection ---
+        # Crunchyroll tag pages (e.g. /news/tag/india, /news/tag/Hindi%20Dub)
+        # return a Next.js shell with ZERO <a href> article links in the
+        # server response. Article data is loaded client-side via JavaScript
+        # and the HTML is also behind Cloudflare bot protection.
+        # Do NOT treat this as a scraper failure — detect it explicitly so
+        # /test_post prints the correct diagnostic instead of a generic
+        # "no articles" message.
+        is_nextjs_shell = False
+        is_clientside_rendered = False
+        is_soft_404 = False
 
-            title = a_tag.get_text(" ", strip=True)
-            if len(title) < 8:
-                # Enrich weak anchor text from nearby heading, then attributes
-                heading = a_tag.find_parent(["h1", "h2", "h3", "h4"])
-                if heading:
-                    heading_text = heading.get_text(" ", strip=True)
-                    if len(heading_text) >= 8:
-                        title = heading_text
+        if is_crunchyroll:
+            a_tag_count = body.count("<a")
+            has_next_static = "/_next/static/" in body or "/build/_next/" in body
+            is_nextjs_shell = has_next_static and a_tag_count < 5
+            is_clientside_rendered = is_nextjs_shell
+            is_soft_404 = "could not be found" in body.lower()
+
+        if is_nextjs_shell:
+            logger.info(
+                "[RSSDetector] %s — Next.js/CSR shell, no article data in server HTML; "
+                "article links are loaded client-side and/or protected by bot challenge.",
+                base_url,
+            )
+        elif is_soft_404:
+            logger.info(
+                "[RSSDetector] %s — server returned 200 but page indicates content not found.",
+                base_url,
+            )
+        else:
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag.get("href", "")
+                if not href.startswith("http"):
+                    href = urljoin(base_url, href)
+
+                title = a_tag.get_text(" ", strip=True)
                 if len(title) < 8:
-                    title = a_tag.get("aria-label") or a_tag.get("title") or title
+                    # Enrich weak anchor text from nearby heading, then attributes
+                    heading = a_tag.find_parent(["h1", "h2", "h3", "h4"])
+                    if heading:
+                        heading_text = heading.get_text(" ", strip=True)
+                        if len(heading_text) >= 8:
+                            title = heading_text
+                    if len(title) < 8:
+                        title = a_tag.get("aria-label") or a_tag.get("title") or title
 
-            add_item(title, href)
+                add_item(title, href)
 
-            if len(items) >= 10:
-                break
+                if len(items) >= 10:
+                    break
 
     if items:
         logger.info(f"[RSSDetector] Scraper found {len(items)} item(s) on {base_url}")

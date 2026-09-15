@@ -312,6 +312,19 @@ async def test_post_cmd(client: Client, message: Message):
             # Strategy 2+: fall back to HTML scraping (JSON-LD → embedded JSON
             # → article/card containers → headings → article links)
             if not items:
+                # Check for Next.js/CSR shell with no article data before
+                # scraping — gives a more specific diagnostic for Crunchyroll
+                # tag pages and similar client-side rendered sites.
+                _a_tag_count = content.count("<a")
+                _is_nextjs_shell = "/_next/static/" in content or "/build/_next/" in content
+                if _is_nextjs_shell and _a_tag_count < 5:
+                    return await processing_msg.edit_text(
+                        f"⚠️ **{_sm('html fetched, but crunchyroll/next.js csr or bot-protected')}.**\\n"
+                        f"🔗 {url}\\n\n"
+                        f"**{_sm('reason')}:** ᴡᴇʙsɪᴛᴇ ᴋɪ ᴀs ᴄʟɪᴇɴᴛ-sɪᴅᴇ/ᴘʀᴏᴛᴇᴄᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴅɪʏᴀ, "
+                        f"sᴇʀᴠᴇʀ ᴀɴsᴘʙᴇ ᴍᴇɴ ᴀʀᴛɪᴄʟᴇ ᴅᴀᴛᴀ ɴʜɪ ᴍɪʟᴀ.\n\n"
+                        f"**{_sm('status')}:** {status}"
+                    )
                 items = _scrape_latest_items(content, url)
 
             if not items:

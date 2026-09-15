@@ -268,14 +268,23 @@ async def get_anilist_poster(session: aiohttp.ClientSession, title: str, retries
                     timeout=aiohttp.ClientTimeout(total=15)
                 ) as response:
 
+                    if response.status == 404:
+                        logging.info(f"[AniList] ❌ Not found: '{search_term}'")
+                        break  # No retry — candidate not found, try next one
+
                     if response.status == 429:
                         retry_after = int(response.headers.get('Retry-After', 10))
-                        logging.warning(f"[AniList] ⏳ Rate limited. Waiting {retry_after}s (attempt {attempt}/{retries})...")
+                        logging.warning(f"[AniList] ⏳ Rate limited. Waiting {retry_after}s ...")
                         await asyncio.sleep(retry_after)
                         continue
 
-                    if response.status != 200:
+                    if response.status not in {500, 502, 503, 504}:
                         logging.warning(f"[AniList] ⚠️ HTTP {response.status} for '{search_term}' (attempt {attempt}/{retries})")
+                        await asyncio.sleep(2 * attempt)
+                        continue
+
+                    if response.status != 200:
+                        logging.warning(f"[AniList] ⚠️ AniList server error, retrying... (attempt {attempt}/{retries})")
                         await asyncio.sleep(2 * attempt)
                         continue
 
