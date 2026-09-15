@@ -163,6 +163,32 @@ async def _fetch_url(
     return 0, ""
 
 
+def _looks_like_direct_feed(url: str) -> bool:
+    """
+    Check if a URL looks like a direct RSS/Atom feed endpoint.
+    Returns True for URLs ending in common feed patterns.
+    URLs that match use a bare session.get() (no browser headers) to
+    match the scheduler's successful fetch behavior and avoid 403 blocks.
+    """
+    if not url:
+        return False
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    # Direct feed endpoints: /feed/, /feed, /rss, /rss.xml, /feed.xml, etc.
+    if path.endswith("/feed") or path.endswith("/feed/"):
+        return True
+    if path.endswith("/rss") or path.endswith("/rss/"):
+        return True
+    # XML extension (common for RSS/Atom files)
+    if path.endswith(".xml"):
+        return True
+    # Also match if "feed" or "rss" appears as a path segment
+    parts = [p for p in path.strip("/").split("/") if p]
+    if "feed" in parts or "rss" in parts:
+        return True
+    return False
+
+
 def _is_valid_feed(feed) -> bool:
     """
     Check if a parsed feed is valid.
@@ -184,8 +210,25 @@ async def _validate_direct_feed(session: aiohttp.ClientSession, url: str) -> dic
     """
     Try to validate URL as a direct RSS/Atom feed.
     Returns source dict if valid, None otherwise.
+
+    For direct feed URLs (ending in /feed/, /rss, .xml, etc.), use a bare
+    session.get() without browser-style headers. This matches the scheduler's
+    fetch behavior, which successfully fetches the same feeds without the
+    Referer/Accept headers that can trigger HTTP 403 on some servers.
+    For non-feed URLs, fall back to _fetch_url() with browser headers for
+    the scraper/feed-discovery path.
     """
-    status, content = await _fetch_url(session, url)
+    if _looks_like_direct_feed(url):
+        try:
+            async with session.get(url, timeout=REQUEST_TIMEOUT) as resp:
+                content = await resp.text()
+                status = resp.status
+        except Exception as e:
+            logger.error(f"[RSSDetector] Feed fetch error for '{url}': {e}")
+            return None
+    else:
+        status, content = await _fetch_url(session, url)
+
     if status != 200 or not content:
         return None
 
