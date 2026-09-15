@@ -278,27 +278,33 @@ async def get_anilist_poster(session: aiohttp.ClientSession, title: str, retries
                         await asyncio.sleep(retry_after)
                         continue
 
-                    if response.status not in {500, 502, 503, 504}:
-                        logging.warning(f"[AniList] ⚠️ HTTP {response.status} for '{search_term}' (attempt {attempt}/{retries})")
-                        await asyncio.sleep(2 * attempt)
-                        continue
-
-                    if response.status != 200:
+                    if response.status in {500, 502, 503, 504}:
                         logging.warning(f"[AniList] ⚠️ AniList server error, retrying... (attempt {attempt}/{retries})")
                         await asyncio.sleep(2 * attempt)
                         continue
 
-                    data = await response.json()
+                    # Any other non-200 status — log once, do NOT retry as HTTP error
+                    if response.status != 200:
+                        logging.warning(f"[AniList] ⚠️ HTTP {response.status} for '{search_term}' (attempt {attempt}/{retries})")
+                        await asyncio.sleep(2 * attempt)
+                        continue
 
-                    if 'errors' in data:
-                        logging.warning(f"[AniList] ⚠️ Partial errors for '{search_term}': {data.get('errors')}")
+                    # HTTP 200 — parse response, do NOT retry 200 as an HTTP failure
+                    try:
+                        data = await response.json()
+                    except Exception as e:
+                        logging.warning(f"[AniList] ⚠️ Failed to parse JSON for '{search_term}': {e}")
+                        break  # Parse failure — no retry, try next candidate
+
+                    if 'errors' in data and data['errors']:
+                        logging.warning(f"[AniList] ⚠️ AniList API errors for '{search_term}': {data.get('errors')}")
 
                     data_section = data.get('data', {})
 
+                    # HTTP 200 but no data returned — not a retryable HTTP error
                     if not data_section:
-                        logging.warning(f"[AniList] ❌ Empty data for '{search_term}' (attempt {attempt}/{retries})")
-                        await asyncio.sleep(2 * attempt)
-                        continue
+                        logging.info(f"[AniList] ℹ️ No matching result for: '{search_term}'")
+                        break  # No retry — move to next candidate
 
                     # Check anime first, then manga — cover first, banner as fallback
                     for media_type in ['anime', 'manga']:
@@ -316,21 +322,24 @@ async def get_anilist_poster(session: aiohttp.ClientSession, title: str, retries
                             logging.info(f"[AniList] ✅ SUCCESS! {media_type.upper()} banner found for '{search_term}'")
                             return banner
 
-                    # No image found for this search term, try next candidate
+                    # HTTP 200 but no image found for this candidate — try next candidate
                     logging.info(f"[AniList] ❌ No images for '{search_term}', trying next candidate...")
                     break  # Exit retry loop, move to next search term
 
             except asyncio.TimeoutError:
                 logging.error(f"[AniList] ⏱️ Timeout for '{search_term}' (attempt {attempt}/{retries})")
-                await asyncio.sleep(2 * attempt)
+                if attempt < retries:
+                    await asyncio.sleep(2 * attempt)
 
             except aiohttp.ClientError as e:
                 logging.error(f"[AniList] 🌐 Network error for '{search_term}' (attempt {attempt}/{retries}): {e}")
-                await asyncio.sleep(2 * attempt)
+                if attempt < retries:
+                    await asyncio.sleep(2 * attempt)
 
             except Exception as e:
                 logging.error(f"[AniList] 💥 Unexpected error for '{search_term}' (attempt {attempt}/{retries}): {e}")
-                await asyncio.sleep(2 * attempt)
+                if attempt < retries:
+                    await asyncio.sleep(2 * attempt)
 
     logging.error(f"[AniList] ❌ All candidates failed for original title: '{title}'")
     return None
